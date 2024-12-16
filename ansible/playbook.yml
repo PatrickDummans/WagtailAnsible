@@ -1,0 +1,116 @@
+
+- name: Déploiement Wagtail
+  hosts: all
+  become: yes
+  vars:
+    project_name: wagtail_project
+    app_directory: /var/www/wagtail_project
+    python_version: python3
+    domain_name: example.com
+    gunicorn_service_name: gunicorn-wagtail
+
+  tasks:
+    - name: Mettre à jour les paquets
+      apt:
+        update_cache: yes
+
+    - name: Installer les dépendances système
+      apt:
+        name:
+          - git
+          - python3
+          - python3-pip
+          - libpq-dev
+          - nginx
+        state: present
+
+    - name: Créer le répertoire du projet
+      file:
+        path: "{{ app_directory }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Installer Wagtail et Django via pip
+      pip:
+        name:
+          - wagtail
+          - django
+
+    - name: Créer un nouveau projet Wagtail (si non existant)
+      command:
+        cmd: wagtail start {{ project_name }} {{ app_directory }}
+        creates: "{{ app_directory }}/manage.py"
+
+    - name: Migrer la base de données
+      command: "{{ python_version }} manage.py migrate"
+      args:
+        chdir: "{{ app_directory }}"
+
+    - name: Collecter les fichiers statiques
+      command: "{{ python_version }} manage.py collectstatic --noinput"
+      args:
+        chdir: "{{ app_directory }}"
+
+    - name: Configurer Gunicorn
+      copy:
+        dest: /etc/systemd/system/{{ gunicorn_service_name }}.service
+        content: |
+          [Unit]
+          Description=Gunicorn for Wagtail Project
+          After=network.target
+
+          [Service]
+          User=www-data
+          Group=www-data
+          WorkingDirectory={{ app_directory }}
+          ExecStart={{ python_version }} manage.py runserver
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Redémarrer Gunicorn
+      systemd:
+        name: "{{ gunicorn_service_name }}"
+        state: restarted
+        enabled: yes
+
+    - name: Nginx | Check if is present
+      command: test -x /usr/sbin/nginx
+      ignore_errors: yes
+      register: nginx_present
+      tags: nginx
+
+    - name: Nginx | Install
+      apt:
+        name: nginx
+        state: present
+      tags: nginx
+      when: nginx_present.rc != 0
+
+    - name: Supprimer la configuration par défaut de Nginx
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Nginx | Remove default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      tags: nginx
+      when: nginx_present.rc != 0
+      become: yes
+
+    - name: Nginx | Reload
+      service:
+        name: nginx
+        state: reloaded
+      when: nginx_present.rc != 0
+      become: yes
+
+    - name: Upload nginx site config
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-enabled/wagtail
+      tags: nginx_config
