@@ -8,4 +8,6 @@ vagrant up
 
 vagrant ssh 
 
-python manage.py runserver
+cd /var/www/wagtail_projetc
+
+python3 manage.py runserver 0.0.0.0:8080
